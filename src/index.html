@@ -1,22 +1,208 @@
 <!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <link rel="stylesheet" href="styles.css" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>PakePlus App</title>
-        <script type="module" src="/main.js" defer></script>
-    </head>
+<html lang="zh">
 
-    <body>
-        <main class="container">
-            <h1>Welcome to PakePlus</h1>
+<head>
+  <meta charset="UTF-8">
+  <title>Motors Control</title>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", sans-serif;
+      padding: 20px;
+      background: #f0f0f0;
+    }
 
-            <form class="row" id="greet-form">
-                <input id="greet-input" placeholder="Enter a name..." />
-                <button type="submit">Greet</button>
-            </form>
-            <p id="greet-msg"></p>
-        </main>
-    </body>
+    h2 {
+      color: #333;
+    }
+
+    button,
+    select,
+    input {
+      margin: 5px;
+      padding: 5px 10px;
+      font-size: 16px;
+    }
+
+    input[type=number] {
+      width: 80px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100px;
+      margin-top: 10px;
+      font-family: monospace;
+    }
+
+    .motor {
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin: 10px 0;
+      background: #fff;
+    }
+
+    .status-indicator {
+      width: 16px;
+      height: 16px;
+      display: inline-block;
+      border-radius: 50%;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+
+    .state-0 {
+      background: red;
+    }
+
+    .state-1 {
+      background: yellow;
+    }
+
+    .state-2 {
+      background: green;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h2>🤠 Motors Control</h2>
+
+  <button onclick="connectSerial()">🔌 连接串口</button>
+  <span id="status">未连接</span>
+
+  <div id="motors"></div>
+
+  <div>
+    <label>自定义指令：</label><br>
+    <input id="customCmd" type="text" style="width: 60%;" placeholder="例如：SET 1000 200 50 1" />
+    <button onclick="sendCustom()">发送</button>
+  </div>
+
+  <textarea id="log" readonly></textarea>
+
+  <script>
+    let port, writer, reader;
+    const log = document.getElementById("log");
+    const motorCount = 3;
+
+    function initUI() {
+      const container = document.getElementById("motors");
+      for (let i = 0; i < motorCount; i++) {
+        const div = document.createElement("div");
+        div.className = "motor";
+        div.innerHTML = `
+        <h3>电机 ${i}</h3>
+        <button onclick="sendAndQuery('FORW ${i}', ${i})">Forward</button>
+        <button onclick="sendAndQuery('BACK ${i}', ${i})">Backward</button>
+        <button onclick="sendAndQuery('INITI ${i}', ${i})">初始化</button>
+        <button onclick="sendAndQuery('CNTR 0 ${i}', ${i})">停止</button>
+        <button onclick="sendAndQuery('CNTR 1 ${i}', ${i})">使能</button>
+        <button onclick="sendAndQuery('CNTR 2 ${i}', ${i})">运动</button>
+        <div>状态：<span class="status-indicator state-0" id="state${i}"></span><span id="stateText${i}">未知</span></div>
+        <div>当前位置：<span id="pos${i}">--</span></div>
+        <div>速度：<input type="number" id="speed${i}" onchange="updateMotor(${i})"></div>
+        <div>加速度：<input type="number" id="accel${i}" onchange="updateMotor(${i})"></div>
+        <div>步距：<input type="number" id="step${i}" onchange="updateStep(${i})"></div>
+      `;
+        container.appendChild(div);
+      }
+    }
+
+    async function connectSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        reader = port.readable.getReader();
+        document.getElementById("status").textContent = "已连接";
+        readLoop();
+        setTimeout(() => {
+          for (let i = 0; i < motorCount; i++) sendCmd(`STATUS ${i}`);
+        }, 1000);
+      } catch (err) {
+        alert("串口连接失败：" + err);
+      }
+    }
+
+    async function sendCmd(text) {
+      if (!writer) return;
+      const data = new TextEncoder().encode(text + "\n");
+      await writer.write(data);
+      logMsg("➡️ " + text);
+    }
+
+    function sendAndQuery(cmd, index) {
+      sendCmd(cmd);
+      setTimeout(() => sendCmd(`STATUS ${index}`), 100);
+    }
+
+    function sendCustom() {
+      const cmd = document.getElementById("customCmd").value.trim();
+      if (cmd) sendCmd(cmd);
+    }
+
+    function logMsg(msg) {
+      log.value += msg + "\n";
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function readLoop() {
+      const decoder = new TextDecoder('utf-8');
+      let buffer = "";
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            buffer += decoder.decode(value);
+            let lines = buffer.split("\n");
+            buffer = lines.pop();
+            lines.forEach(handleLine);
+          }
+        }
+      } catch (err) {
+        logMsg("❗ 读取串口失败：" + err);
+      }
+    }
+
+    function handleLine(line) {
+      const match = line.match(/^Motor (\d+) status: State: (\d) \| Speed: (\d+) steps\/s .*?\| Accel: (\d+) \| TargetPos: (-?\d+) .*?\| StepDistance: (\d+)/);
+      if (match) {
+        const i = parseInt(match[1]);
+        const state = parseInt(match[2]);
+        const speed = parseInt(match[3]);
+        const accel = parseInt(match[4]);
+        const pos = parseInt(match[5]);
+        const step = parseInt(match[6]);
+        document.getElementById(`state${i}`).className = `status-indicator state-${state}`;
+        document.getElementById(`stateText${i}`).textContent = state === 0 ? "停止" : (state === 1 ? "已使能" : "可运动");
+        document.getElementById(`pos${i}`).textContent = pos;
+        document.getElementById(`speed${i}`).value = speed;
+        document.getElementById(`accel${i}`).value = accel;
+        document.getElementById(`step${i}`).value = step;
+      } else {
+        logMsg(line);
+      }
+    }
+
+    function updateMotor(i) {
+      const speed = document.getElementById(`speed${i}`).value;
+      const accel = document.getElementById(`accel${i}`).value;
+      if (speed && accel) {
+        sendAndQuery(`SET 0 ${speed} ${accel} ${i}`, i);
+      }
+    }
+
+    function updateStep(i) {
+      const step = document.getElementById(`step${i}`).value;
+      if (step) {
+        sendAndQuery(`DIS ${step} ${i}`, i);
+      }
+    }
+
+    initUI();
+  </script>
+</body>
+
 </html>
